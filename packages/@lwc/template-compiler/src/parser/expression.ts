@@ -6,8 +6,8 @@
  */
 import traverse from '@babel/traverse';
 import * as types from '@babel/types';
-import * as babylon from '@babel/parser';
 import * as esutils from 'esutils';
+import jsep from 'jsep';
 
 import { ParserDiagnostics, invariant, generateCompilerError } from '@lwc/errors';
 
@@ -33,31 +33,51 @@ export function isPotentialExpression(source: string): boolean {
     return !!source.match(POTENTIAL_EXPRESSION_RE);
 }
 
+function convertToBabel(node: any) {
+    if (node.type === 'File')
+        return node;
+
+    const {
+        comments = [],
+        tokens,
+        ...program
+    } = node;
+
+    const ast = {
+        type: 'File',
+        program: {
+            ...program,
+            directives: [],
+        },
+        comments,
+        tokens,
+    };
+
+    return ast;
+}
+
 // FIXME: Avoid throwing errors and return it properly
 export function parseExpression(source: string, element: IRNode, state: State): TemplateExpression {
     try {
-        const parsed = babylon.parse(source);
-
         let expression: any;
+        const parsed = jsep(source.substr(1, source.length - 2));
 
-        traverse(parsed, {
+        traverse(convertToBabel(parsed), {
             enter(path) {
                 const isValidNode =
                     path.isProgram() ||
-                    path.isBlockStatement() ||
-                    path.isExpressionStatement() ||
+                    path.type === 'Compound' ||
                     path.isIdentifier() ||
+                    path.isLiteral() ||
                     path.isMemberExpression();
                 invariant(isValidNode, ParserDiagnostics.INVALID_NODE, [path.type]);
 
                 // Ensure expression doesn't contain multiple expressions: {foo;bar}
-                const hasMultipleExpressions =
-                    path.isBlock() && (path.get('body') as any).length !== 1;
-                invariant(!hasMultipleExpressions, ParserDiagnostics.MULTIPLE_EXPRESSIONS);
+                invariant(path.type !== 'Compound', ParserDiagnostics.MULTIPLE_EXPRESSIONS);
 
                 // Retrieve the first expression and set it as return value
-                if (path.isExpressionStatement() && !expression) {
-                    expression = (path.node as types.ExpressionStatement).expression;
+                if (!expression && !path.isProgram()) {
+                    expression = path.node;
                 }
             },
 
