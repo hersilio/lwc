@@ -17,7 +17,8 @@
     "scripts": {
         "clean": "rm -rf dist/",
         "build": "tsc",
-        "test": "jest"
+        "test": "jest",
+        "perf": "node perf/perf-test.js"
     },
     "devDependencies": {
         "@types/he": "^1.1.1"
