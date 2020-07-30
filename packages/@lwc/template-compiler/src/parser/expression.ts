@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: MIT
  * For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/MIT
  */
-import traverse from '@babel/traverse';
 import * as types from '@babel/types';
 import * as esutils from 'esutils';
 import jsep from 'jsep';
@@ -33,77 +32,53 @@ export function isPotentialExpression(source: string): boolean {
     return !!source.match(POTENTIAL_EXPRESSION_RE);
 }
 
-function convertToBabel(node: any) {
-    if (node.type === 'File')
-        return node;
+function validateTemplateExpression(node: jsep.Expression) {
+    if (node.type === 'MemberExpression') {
+        const exp = node as jsep.MemberExpression;
+        validateTemplateExpression(exp.object);
+        validateTemplateExpression(exp.property);
+    } else {
+        invariant(
+            node.type === 'Identifier' || node.type === 'Literal',
+            ParserDiagnostics.INVALID_NODE, [node.type]
+        );
+    }
+}
 
-    const {
-        comments = [],
-        tokens,
-        ...program
-    } = node;
+function getParsedExpression(rootNode: jsep.Expression, element: IRNode, state: State): TemplateExpression {
+    // Ensure expression doesn't contain multiple expressions: {foo;bar}
+    invariant(rootNode.type !== 'Compound', ParserDiagnostics.MULTIPLE_EXPRESSIONS);
 
-    const ast = {
-        type: 'File',
-        program: {
-            ...program,
-            directives: [],
-        },
-        comments,
-        tokens,
-    };
+    validateTemplateExpression(rootNode);
 
-    return ast;
+    if (rootNode.type === 'MemberExpression') {
+        const memberExpression = rootNode as jsep.MemberExpression;
+        const shouldReportComputed =
+            !state.config.experimentalComputedMemberExpression &&
+            memberExpression.computed;
+        invariant(
+            !shouldReportComputed,
+            ParserDiagnostics.COMPUTED_PROPERTY_ACCESS_NOT_ALLOWED
+        );
+
+        const propertyIdentifier = memberExpression.property as TemplateIdentifier;
+        const objectIdentifier = memberExpression.object as TemplateIdentifier;
+        invariant(
+            !isBoundToIterator(objectIdentifier, element) ||
+            propertyIdentifier.name !== ITERATOR_NEXT_KEY,
+            ParserDiagnostics.MODIFYING_ITERATORS_NOT_ALLOWED
+        );
+    }
+
+    return rootNode as TemplateExpression;
 }
 
 // FIXME: Avoid throwing errors and return it properly
 export function parseExpression(source: string, element: IRNode, state: State): TemplateExpression {
     try {
-        let expression: any;
         const parsed = jsep(source.substr(1, source.length - 2));
 
-        traverse(convertToBabel(parsed), {
-            enter(path) {
-                const isValidNode =
-                    path.isProgram() ||
-                    path.type === 'Compound' ||
-                    path.isIdentifier() ||
-                    path.isLiteral() ||
-                    path.isMemberExpression();
-                invariant(isValidNode, ParserDiagnostics.INVALID_NODE, [path.type]);
-
-                // Ensure expression doesn't contain multiple expressions: {foo;bar}
-                invariant(path.type !== 'Compound', ParserDiagnostics.MULTIPLE_EXPRESSIONS);
-
-                // Retrieve the first expression and set it as return value
-                if (!expression && !path.isProgram()) {
-                    expression = path.node;
-                }
-            },
-
-            MemberExpression: {
-                exit(path) {
-                    const shouldReportComputed =
-                        !state.config.experimentalComputedMemberExpression &&
-                        (path.node as types.MemberExpression).computed;
-                    invariant(
-                        !shouldReportComputed,
-                        ParserDiagnostics.COMPUTED_PROPERTY_ACCESS_NOT_ALLOWED
-                    );
-
-                    const memberExpression = path.node as types.MemberExpression;
-                    const propertyIdentifier = memberExpression.property as TemplateIdentifier;
-                    const objectIdentifier = memberExpression.object as TemplateIdentifier;
-                    invariant(
-                        !isBoundToIterator(objectIdentifier, element) ||
-                            propertyIdentifier.name !== ITERATOR_NEXT_KEY,
-                        ParserDiagnostics.MODIFYING_ITERATORS_NOT_ALLOWED
-                    );
-                },
-            },
-        });
-
-        return expression;
+        return getParsedExpression(parsed, element, state);
     } catch (err) {
         err.message = `Invalid expression ${source} - ${err.message}`;
         throw err;
